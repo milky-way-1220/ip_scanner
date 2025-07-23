@@ -149,7 +149,6 @@ def run_single_test(ip, port):
         print(f"[실패] {ip}:{port}에 연결할 수 없습니다.")
     print("-" * 30)
 
-# --- 메인 실행 부분 --- 
 def main():
     # --- 사용법 안내 ---
     # 이 스크립트는 터미널(명령 프롬프트, PowerShell 등)에서 실행해야 합니다.
