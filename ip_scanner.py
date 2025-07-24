@@ -1,5 +1,5 @@
 # ==================================================================================
-# IP 주소 및 포트 스캐너 (v2.0)
+# IP 주소 및 포트 스캐너 (v2.1)
 #
 # 이 스크립트는 특정 IP 주소의 포트가 열려 있는지 확인하거나,
 # 지정된 IP 주소 범위 전체를 스캔하여 열려 있는 포트를 찾아 파일에 저장합니다.
@@ -28,16 +28,16 @@ OUTPUT_FILE = "found_ips.txt"
 # 스캔 시 동시에 작업할 스레드(일꾼)의 수입니다.
 # 숫자가 높을수록 스캔 속도가 빨라지지만, 컴퓨터와 네트워크에 부담을 줄 수 있습니다.
 # 인터넷 회선이 빠르거나 컴퓨터 성능이 좋다면 값을 높여도 좋습니다. (예: 500 또는 1000)
-DEFAULT_THREADS = 200
+DEFAULT_THREADS = 500
 
-# --- 내부 변수 (수정할 필요 없음) ---
-print_lock = threading.Lock()
+print_lock = threading.RLock()
 found_ips_count = 0
 scanned_count = 0
 next_ip_to_scan = 0
 next_ip_lock = threading.Lock()
 
 def check_ip(address, port):
+    """지정된 IP 주소와 포트에 연결을 시도하여 성공 여부를 반환합니다."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(CONNECTION_TIMEOUT)
@@ -47,18 +47,27 @@ def check_ip(address, port):
         return False
 
 def save_found_ip(ip, port):
+    """발견된 IP와 포트를 파일에 저장합니다. 스레드 안전성을 위해 잠금을 사용합니다."""
     with print_lock:
         with open(OUTPUT_FILE, "a") as f:
             f.write(f"{ip}:{port}\n")
 
 def int_to_ip_str(ip_int):
+    """정수형 IP 주소를 문자열 형식으로 변환합니다."""
     return f"{(ip_int >> 24) & 255}.{(ip_int >> 16) & 255}.{(ip_int >> 8) & 255}.{ip_int & 255}"
 
 def ip_str_to_int(ip_str):
-    parts = list(map(int, ip_str.split('.')))
-    return (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+    """문자열 IP 주소를 정수형으로 변환합니다. 잘못된 형식일 경우 None을 반환합니다."""
+    try:
+        parts = list(map(int, ip_str.split('.')))
+        if len(parts) != 4 or not all(0 <= p <= 255 for p in parts):
+            return None
+        return (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+    except (ValueError, IndexError):
+        return None
 
-def worker(start_int, end_int, port_to_check):
+def worker(end_int, port_to_check):
+    """IP 스캔 작업을 수행하는 스레드 함수입니다."""
     global scanned_count, found_ips_count, next_ip_to_scan
 
     while True:
@@ -70,23 +79,34 @@ def worker(start_int, end_int, port_to_check):
             break
 
         ip_address = int_to_ip_str(current_ip_int)
+        is_found = check_ip(ip_address, port_to_check)
 
-        if check_ip(ip_address, port_to_check):
-            with print_lock:
+        with print_lock:
+            scanned_count += 1
+            if is_found:
                 found_ips_count += 1
                 print(f"\n[성공] {ip_address}:{port_to_check} (파일에 저장됨)")
                 save_found_ip(ip_address, port_to_check)
-        
-        with print_lock:
-            scanned_count += 1
 
 def run_range_scan(start_ip_str, end_ip_str, port, threads):
+    """지정된 IP 범위에 대해 스캔을 실행합니다."""
     global next_ip_to_scan
     
     start_int = ip_str_to_int(start_ip_str)
-    end_int = ip_str_to_int(end_ip_str)
-    total_ips = end_int - start_int + 1
+    if start_int is None:
+        print(f"[오류] 시작 IP 주소 형식이 잘못되었습니다: {start_ip_str}")
+        sys.exit(1)
 
+    end_int = ip_str_to_int(end_ip_str)
+    if end_int is None:
+        print(f"[오류] 종료 IP 주소 형식이 잘못되었습니다: {end_ip_str}")
+        sys.exit(1)
+
+    if start_int > end_int:
+        print(f"[오류] 시작 IP({start_ip_str})가 종료 IP({end_ip_str})보다 클 수 없습니다.")
+        sys.exit(1)
+
+    total_ips = end_int - start_int + 1
     next_ip_to_scan = start_int
 
     print("IP 범위 스캔을 시작합니다...")
@@ -98,7 +118,7 @@ def run_range_scan(start_ip_str, end_ip_str, port, threads):
 
     thread_list = []
     for _ in range(threads):
-        thread = threading.Thread(target=worker, args=(start_int, end_int, port))
+        thread = threading.Thread(target=worker, args=(end_int, port))
         thread.daemon = True
         thread.start()
         thread_list.append(thread)
@@ -129,19 +149,25 @@ def run_range_scan(start_ip_str, end_ip_str, port, threads):
             if not any(t.is_alive() for t in thread_list):
                 break
     except KeyboardInterrupt:
-        print("\n사용자에 의해 스캔이 중단되었습니다. (Ctrl+C)")
+        print("\n\n사용자에 의해 스캔이 중단되었습니다. (Ctrl+C)")
 
     sys.stdout.write(
-        f"\r[완료] 총 {scanned_count:,}개 IP 확인 | 찾은 IP: {found_ips_count}개 | 최종 정리 중...{' ' * 10}"
+        f"\r[완료] 총 {scanned_count:,}개 IP 확인 | 찾은 IP: {found_ips_count}개 | 최종 정리 중...{' ' * 10}\n"
     )
     sys.stdout.flush()
     
-    print("\n" + "-" * 30)
+    print("-" * 30)
     print("스캔이 종료되었습니다.")
 
 def run_single_test(ip, port):
+    """단일 IP 주소에 대해 포트 연결을 테스트합니다."""
     print(f"단일 테스트: {ip}:{port} (타임아웃: {CONNECTION_TIMEOUT}초)")
     print("-" * 30)
+    
+    if ip_str_to_int(ip) is None:
+        print(f"[오류] IP 주소 형식이 잘못되었습니다: {ip}")
+        return
+
     if check_ip(ip, port):
         print(f"[성공] {ip}:{port}에 연결할 수 있습니다.")
         save_found_ip(ip, port)
@@ -216,6 +242,9 @@ def main():
         run_single_test(args.test, args.port)
     elif args.start and args.end:
         run_range_scan(args.start, args.end, args.port, args.threads)
+    elif args.start or args.end:
+        print("[오류] IP 범위 스캔을 위해서는 --start와 --end를 모두 지정해야 합니다.")
+        parser.print_help()
     else:
         parser.print_help()
 
