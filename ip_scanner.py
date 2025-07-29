@@ -1,5 +1,5 @@
 # ==================================================================================
-# IP 주소 및 포트 스캐너 (v2.1)
+# IP 포트 스캐너 (v2.1)
 #
 # 이 스크립트는 특정 IP 주소의 포트가 열려 있는지 확인하거나,
 # 지정된 IP 주소 범위 전체를 스캔하여 열려 있는 포트를 찾아 파일에 저장합니다.
@@ -17,10 +17,8 @@ import datetime
 # 아래 값들은 스크립트 실행 시 별도의 옵션을 주지 않을 경우 사용되는 기본값입니다.
 # 터미널에서 명령어를 입력하여 이 설정들을 대부분 변경할 수 있습니다.
 
-# 스캔할 기본 포트 번호입니다.
 DEFAULT_PORT = 80
 
-# 자주 사용되는 포트 번호입니다.
 COMMON_PORTS = {
     'http': 80,
     'https': 443,
@@ -31,17 +29,9 @@ COMMON_PORTS = {
     'minecraft': 25565
 }
 
-# 각 IP에 연결을 시도할 때 기다리는 최대 시간(초)입니다.
-# 네트워크 상태가 좋지 않거나 느린 서버를 찾으려면 이 값을 늘릴 수 있습니다. (예: 1.0)
 CONNECTION_TIMEOUT = 0.5
-
-# 스캔에 성공한 IP 주소와 포트가 저장될 파일의 이름입니다.
 OUTPUT_FILE = "found_ips.txt"
-
-# 스캔 시 동시에 작업할 스레드(일꾼)의 수입니다.
-# 숫자가 높을수록 스캔 속도가 빨라지지만, 컴퓨터와 네트워크에 부담을 줄 수 있습니다.
-# 인터넷 회선이 빠르거나 컴퓨터 성능이 좋다면 값을 높여도 좋습니다. (예: 500 또는 1000)
-DEFAULT_THREADS = 500
+DEFAULT_THREADS = 500  # 높은 값은 더 빠른 스캔을 제공하지만 시스템 부하가 증가할 수 있음
 
 print_lock = threading.RLock()
 found_ips_count = 0
@@ -73,34 +63,28 @@ def int_to_ip_str(ip_int):
 
 def clean_host(host_str):
     """URL이나 도메인 문자열에서 실제 호스트 부분만 추출합니다."""
-    # http:// 또는 https:// 제거
     if '://' in host_str:
         host_str = host_str.split('://', 1)[1]
     
-    # 포트 번호나 경로 제거
-    host_str = host_str.split(':', 1)[0]  # 포트 번호 제거
-    host_str = host_str.split('/', 1)[0]  # 경로 제거
+    host_str = host_str.split(':', 1)[0]
+    host_str = host_str.split('/', 1)[0]
     
     return host_str
 
 def resolve_host(host_str):
     """도메인 이름 또는 IP 주소를 IP 주소로 변환합니다."""
-    # URL 형식 정리
     host_str = clean_host(host_str)
     
     try:
-        # 먼저 IP 주소인지 확인
         parts = list(map(int, host_str.split('.')))
         if len(parts) == 4 and all(0 <= p <= 255 for p in parts):
             return host_str
         
-        # IP 주소가 아니라면 도메인 이름으로 간주하고 DNS 조회
         return socket.gethostbyname(host_str)
     except socket.gaierror:
         return None
     except (ValueError, IndexError):
         try:
-            # DNS 조회 시도
             return socket.gethostbyname(host_str)
         except socket.gaierror:
             return None
@@ -108,7 +92,6 @@ def resolve_host(host_str):
 def ip_str_to_int(ip_str):
     """문자열 IP 주소를 정수형으로 변환합니다. 잘못된 형식일 경우 None을 반환합니다."""
     try:
-        # 도메인 이름이나 IP 주소를 IP 형식으로 변환
         resolved_ip = resolve_host(ip_str)
         if resolved_ip is None:
             return None
@@ -266,36 +249,23 @@ def run_range_scan(start_host_str, end_host_str, port, threads):
     print("-" * 50)
 
 def get_ports_to_test(host, specified_port):
-    """호스트와 지정된 포트를 기반으로 테스트할 포트 목록을 반환합니다."""
-    # URL에서 프로토콜 확인
     original_host = host
     host = clean_host(host)
-    ports_to_test = []
     
-    # 프로토콜이 명시된 경우
     if '://' in original_host:
         protocol = original_host.split('://', 1)[0].lower()
-        if protocol == 'http':
-            return [COMMON_PORTS['http']]
-        elif protocol == 'https':
-            return [COMMON_PORTS['https']]
+        return [COMMON_PORTS[protocol]] if protocol in COMMON_PORTS else [specified_port]
     
-    # 사용자가 특정 포트를 지정한 경우
     if specified_port != DEFAULT_PORT:
         return [specified_port]
     
-    # 일반적인 웹 서비스 포트 추가
-    ports_to_test.extend([COMMON_PORTS['http'], COMMON_PORTS['https']])
+    ports = [COMMON_PORTS['http'], COMMON_PORTS['https']]
+    if any(x in host.lower() for x in ('minecraft', 'mc')):
+        ports.append(COMMON_PORTS['minecraft'])
     
-    # 도메인에 따른 특수 포트 추가
-    host_lower = host.lower()
-    if 'minecraft' in host_lower or 'mc' in host_lower:
-        ports_to_test.append(COMMON_PORTS['minecraft'])
-    
-    return ports_to_test
+    return ports
 
 def run_single_test(host, port):
-    """단일 호스트(도메인 또는 IP)에 대해 포트 연결을 테스트합니다."""
     print(f"호스트 테스트: {host}")
     if port == DEFAULT_PORT:
         print("포트를 지정하지 않아 자주 사용되는 포트들을 검사합니다...")
@@ -303,12 +273,8 @@ def run_single_test(host, port):
     print("-" * 30)
     
     resolved_ip = resolve_host(host)
-    if resolved_ip is None:
+    if resolved_ip is None or ip_str_to_int(resolved_ip) is None:
         print(f"[오류] 유효하지 않은 호스트 주소입니다: {host}")
-        return
-        
-    if ip_str_to_int(resolved_ip) is None:
-        print(f"[오류] IP 주소 변환에 실패했습니다: {host} -> {resolved_ip}")
         return
         
     print(f"호스트 주소: {host}")
@@ -316,22 +282,19 @@ def run_single_test(host, port):
         print(f"IP 주소: {resolved_ip}")
     print("-" * 30)
     
-    # 테스트할 포트 목록 가져오기
     ports_to_test = get_ports_to_test(host, port)
     found_any = False
     
-    # 각 포트 테스트
+    service_names = {port: name.upper() for name, port in COMMON_PORTS.items()}
+    
     for test_port in ports_to_test:
+        service_info = f" ({service_names[test_port]})" if test_port in service_names else ""
+        
         if check_ip(resolved_ip, test_port):
-            service_name = [name for name, port in COMMON_PORTS.items() if port == test_port]
-            service_info = f" ({service_name[0].upper()})" if service_name else ""
-            
             print(f"[성공] {host}:{test_port}{service_info}에 연결할 수 있습니다.")
             save_found_ip(resolved_ip, test_port)
             found_any = True
         else:
-            service_name = [name for name, port in COMMON_PORTS.items() if port == test_port]
-            service_info = f" ({service_name[0].upper()})" if service_name else ""
             print(f"[실패] {host}:{test_port}{service_info}에 연결할 수 없습니다.")
     
     if not found_any and len(ports_to_test) > 1:
@@ -342,7 +305,6 @@ def run_single_test(host, port):
     
     print("-" * 30)
 
-# --- 메인 실행 부분 --- 
 def main():
     # --- 사용법 안내 ---
     # 이 스크립트는 터미널(명령 프롬프트, PowerShell 등)에서 실행해야 합니다.
@@ -363,7 +325,7 @@ def main():
     # 예시: 8.8.8.8 IP의 53번 포트가 열려있는지 확인
     #   python ip_scanner.py --test 8.8.8.8 --port 53
     #
-    # [도움말 보기]
+    #
     # 사용 가능한 모든 옵션을 보려면 아래 명령어를 입력하세요.
     #   python ip_scanner.py --help
     # --------------------------------------------------------------------------
